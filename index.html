@@ -18,6 +18,8 @@
   #langs button { font: inherit; font-size: 18px; padding: 10px 18px; border-radius: 12px;
     border: 2px solid #555; background: #222; color: #fff; cursor: pointer; }
   #langs button.sel { border-color: #7CFC9A; background: #1d3b2a; }
+  #asklabel { display: flex; gap: 8px; align-items: center; font-size: 17px; cursor: pointer; }
+  #asklabel input { width: 20px; height: 20px; margin: 0; }
   #start { font: inherit; font-size: 24px; font-weight: 700; padding: 14px 40px; border: 0;
     border-radius: 16px; background: #7CFC9A; color: #111; cursor: pointer; }
   #start:disabled { opacity: 0.5; cursor: default; }
@@ -35,6 +37,7 @@
     <button data-lang="en">English</button>
     <button data-lang="fr">Français</button>
   </div>
+  <label id="asklabel"><input type="checkbox" id="askNum"> <span id="asktxt"></span></label>
   <button id="start">Empezar</button>
   <p id="msg"></p>
 </div>
@@ -45,22 +48,25 @@ const CDN_VISION = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14
 const CDN_WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
 const MODEL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
 const GUIDE_SCALE = 0.62;      // ancho máximo del número como fracción del ancho de pantalla
-const HIT_RADIUS = 36;         // distancia (px) para contar un punto como trazado
-const SAMPLE_STEP = 16;        // separación de los puntos de la guía (px)
-const DONE_FRACTION = 0.7;     // fracción de puntos trazados para completar el número
+const HIT_RADIUS = 22;         // distancia (px) para contar un punto como trazado
+const SAMPLE_STEP = 12;        // separación de los puntos de la guía (px)
+const DONE_FRACTION = 0.9;     // fracción de puntos trazados para completar el número
 const CELEBRATE_MS = 2200;     // pausa tras completar un número
 const TIP_RADIUS = 14;
 const LOCALE = { es: "es-ES", en: "en-US", fr: "fr-FR" };
 const T = {
   es: { title: "Aprende los números", start: "Empezar", loading: "Abriendo cámara y detector…",
         error: "No pude abrir la cámara o el detector. Revisa los permisos del navegador y tu conexión.",
-        level: "Nivel", finished: "¡Terminaste todos los niveles!" },
+        level: "Nivel", finished: "¡Terminaste todos los niveles!",
+        ask: "¿Qué número es?", retry: "Inténtalo otra vez", askLabel: "Preguntar qué número es" },
   en: { title: "Learn the numbers", start: "Start", loading: "Opening camera and detector…",
         error: "I could not open the camera or the detector. Check browser permissions and your connection.",
-        level: "Level", finished: "You finished all the levels!" },
+        level: "Level", finished: "You finished all the levels!",
+        ask: "What number is it?", retry: "Try again", askLabel: "Ask what number it is" },
   fr: { title: "Apprends les nombres", start: "Commencer", loading: "Ouverture de la caméra et du détecteur…",
         error: "Impossible d'ouvrir la caméra ou le détecteur. Vérifie les permissions du navigateur et ta connexion.",
-        level: "Niveau", finished: "Tu as terminé tous les niveaux !" }
+        level: "Niveau", finished: "Tu as terminé tous les niveaux !",
+        ask: "Quel nombre est-ce ?", retry: "Essaie encore", askLabel: "Demander quel nombre c'est" }
 };
 // Niveles: 0-10, 11-20, 40-100 (de 20 en 20), 150-500 (de 50 en 50), 600-1000 (de 100 en 100)
 function seq(a, b, s) { const r = []; for (let x = a; x <= b; x += s) r.push(x); return r; }
@@ -90,6 +96,10 @@ let targets = [], visited = [], visitedCount = 0;
 let glyphFont = "", glyphText = "";
 let lastVideoTime = -1, lastResult = null, currentTip = null, fakeTip = null;
 let lastReward = -1;
+let askNumber = false, askMatched = false, askBusy = false, recog = null;
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const askBox = document.getElementById("askNum");
+const askTxt = document.getElementById("asktxt");
 const events = [];
 function log(ev, data) { if (DEBUG) events.push({ t: Math.round(performance.now()), ev, data }); }
 
@@ -189,7 +199,7 @@ function updateTrace(tip) {
     const dx = targets[i].x - tip.x, dy = targets[i].y - tip.y;
     if (dx * dx + dy * dy <= r2) { visited[i] = true; visitedCount++; }
   }
-  if (visitedCount >= DONE_FRACTION * targets.length) completeNumber();
+  if (visitedCount >= DONE_FRACTION * targets.length) finishTrace();
 }
 
 // ---------- Progreso ----------
@@ -207,6 +217,67 @@ function completeNumber() {
   log("complete", { n });
   playReward();
   setTimeout(() => speak(numberWords(n, lang), lang), 500);
+}
+function finishTrace() {
+  if (askNumber) startAsk();
+  else completeNumber();
+}
+function startAsk() {
+  phase = "ask";
+  askMatched = false; askBusy = false;
+  log("ask", { n: ITEMS[idx].n });
+  updateHud();
+  speakThen(T[lang].ask, lang, listen);
+}
+function speakThen(text, l, done) {
+  let called = false;
+  const once = () => { if (!called) { called = true; done(); } };
+  if (!("speechSynthesis" in window)) { once(); return; }
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = LOCALE[l]; u.rate = 0.9;
+  u.onend = once; u.onerror = once;
+  speechSynthesis.speak(u);
+  setTimeout(once, 4000);
+}
+function norm(s) {
+  return s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[\s,-]/g, "");
+}
+function matchesNumber(transcript, n) {
+  const digits = transcript.match(/\d+/);
+  if (digits && parseInt(digits[0], 10) === n) return true;
+  return norm(transcript) === norm(numberWords(n, lang));
+}
+function listen() {
+  if (phase !== "ask" || askMatched || askBusy) return;
+  const n = ITEMS[idx].n;
+  if (!SR) { completeNumber(); return; }
+  recog = new SR();
+  recog.lang = LOCALE[lang];
+  recog.interimResults = false;
+  recog.maxAlternatives = 3;
+  recog.onresult = (e) => {
+    const alts = Array.from(e.results).flatMap(r => Array.from(r, a => a.transcript));
+    log("heard", { alts });
+    if (alts.some(t => matchesNumber(t, n))) {
+      askMatched = true;
+      completeNumber();
+    } else {
+      askBusy = true;
+      speakThen(T[lang].retry, lang, () => { askBusy = false; listen(); });
+    }
+  };
+  recog.onerror = (e) => {
+    log("recog-error", { error: e.error });
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+      askMatched = true;
+      completeNumber();
+    }
+  };
+  recog.onend = () => {
+    if (phase === "ask" && !askMatched && !askBusy) setTimeout(listen, 300);
+  };
+  try { recog.start(); } catch (err) { log("recog-start-failed", String(err)); }
 }
 function nextNumber() {
   idx++;
@@ -285,6 +356,7 @@ function draw() {
     ctx.restore();
   }
   if (phase === "trace" || phase === "celebrate") drawGuide();
+  if (phase === "ask") drawAnswer();
   if (phase === "celebrate") {
     ctx.save();
     ctx.font = `900 ${ch * 0.3}px system-ui, sans-serif`;
@@ -300,6 +372,13 @@ function draw() {
     ctx.fillStyle = "#ffd54f";
     ctx.fill();
   }
+}
+function drawAnswer() {
+  ctx.save();
+  ctx.font = glyphFont; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillStyle = "rgba(255,255,255,0.9)";
+  ctx.fillText(glyphText, cw / 2, ch / 2);
+  ctx.restore();
 }
 function drawGuide() {
   ctx.save();
@@ -339,6 +418,7 @@ function loop() {
 function updateMenu() {
   document.getElementById("title").textContent = T[lang].title;
   startBtn.textContent = T[lang].start;
+  askTxt.textContent = T[lang].askLabel;
 }
 async function makeLandmarker(mod, vision) {
   for (const delegate of ["GPU", "CPU"]) {
@@ -377,7 +457,8 @@ async function start() {
   menuEl.style.display = "none";
   msgEl.textContent = "";
   idx = 0; phase = "trace";
-  log("start", { lang });
+  askNumber = askBox.checked && !!SR;
+  log("start", { lang, askNumber });
   buildTargets();
   updateHud();
 }
@@ -393,6 +474,7 @@ startBtn.addEventListener("click", start);
 window.addEventListener("pagehide", () => {
   video.srcObject?.getTracks().forEach(t => t.stop());
   landmarker?.close?.();
+  try { recog?.abort?.(); } catch (e) { /* ignorar */ }
 });
 
 function resize() {
