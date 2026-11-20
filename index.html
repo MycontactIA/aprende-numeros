@@ -11,6 +11,12 @@
   #stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
   #hud { position: fixed; top: 14px; left: 18px; font-size: 18px; font-weight: 600;
     text-shadow: 0 1px 3px #000; pointer-events: none; }
+  #choices { position: fixed; left: 0; right: 0; bottom: 9%; display: none; justify-content: center;
+    flex-wrap: wrap; gap: 14px; padding: 0 16px; }
+  #choices.on { display: flex; }
+  #choices button { font: inherit; font-size: clamp(20px, 3.5vw, 30px); font-weight: 700; padding: 14px 22px;
+    border-radius: 16px; border: 3px solid #fff; background: #1d3b2a; color: #fff; cursor: pointer; }
+  #choices button:disabled { opacity: 0.35; cursor: default; }
   #menu { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center;
     justify-content: center; gap: 20px; background: rgba(0, 0, 0, 0.7); }
   #menu h1 { margin: 0; font-size: clamp(28px, 5vw, 48px); }
@@ -30,6 +36,7 @@
 <video id="cam" playsinline muted></video>
 <canvas id="stage"></canvas>
 <div id="hud"></div>
+<div id="choices"></div>
 <div id="menu">
   <h1 id="title">Aprende los números</h1>
   <div id="langs">
@@ -96,7 +103,8 @@ let targets = [], visited = [], visitedCount = 0;
 let glyphFont = "", glyphText = "";
 let lastVideoTime = -1, lastResult = null, currentTip = null, fakeTip = null;
 let lastReward = -1;
-let askNumber = false, askMatched = false, askBusy = false, recog = null;
+let askNumber = false, askMatched = false, askBusy = false, recog = null, askFails = 0;
+const choicesEl = document.getElementById("choices");
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const askBox = document.getElementById("askNum");
 const askTxt = document.getElementById("asktxt");
@@ -211,6 +219,7 @@ function updateHud() {
   hudEl.textContent = `${T[lang].level} ${it.level} · ${nums.indexOf(it.n) + 1}/${nums.length}`;
 }
 function completeNumber() {
+  hideChoices();
   phase = "celebrate";
   celebrateUntil = performance.now() + CELEBRATE_MS;
   const n = ITEMS[idx].n;
@@ -222,9 +231,48 @@ function finishTrace() {
   if (askNumber) startAsk();
   else completeNumber();
 }
+function hideChoices() {
+  choicesEl.classList.remove("on");
+  choicesEl.textContent = "";
+}
+function pickDistractors(n) {
+  const near = Math.max(10, Math.round(n * 0.3));
+  const pool = [];
+  for (let x = Math.max(0, n - near); x <= Math.min(1000, n + near); x++) if (x !== n) pool.push(x);
+  const picked = [];
+  while (picked.length < 2 && pool.length) {
+    const i = Math.floor(Math.random() * pool.length);
+    picked.push(pool.splice(i, 1)[0]);
+  }
+  return picked;
+}
+function showChoices() {
+  const n = ITEMS[idx].n;
+  const options = [n, ...pickDistractors(n)].sort(() => Math.random() - 0.5);
+  choicesEl.textContent = "";
+  options.forEach(x => {
+    const b = document.createElement("button");
+    b.textContent = numberWords(x, lang);
+    b.addEventListener("click", () => {
+      if (phase !== "ask" || askMatched) return;
+      log("choice", { picked: x, correct: x === n });
+      if (x === n) {
+        askMatched = true;
+        hideChoices();
+        completeNumber();
+      } else {
+        b.disabled = true;
+        speakThen(T[lang].retry, lang, () => {});
+      }
+    });
+    choicesEl.appendChild(b);
+  });
+  choicesEl.classList.add("on");
+}
 function startAsk() {
   phase = "ask";
-  askMatched = false; askBusy = false;
+  askMatched = false; askBusy = false; askFails = 0;
+  hideChoices();
   log("ask", { n: ITEMS[idx].n });
   updateHud();
   speakThen(T[lang].ask, lang, listen);
@@ -285,12 +333,16 @@ function listen() {
   recog.interimResults = false;
   recog.maxAlternatives = 5;
   recog.onresult = (e) => {
+    if (phase !== "ask" || askMatched) return;
     const alts = Array.from(e.results).flatMap(r => Array.from(r, a => a.transcript));
     log("heard", { alts });
     if (alts.some(t => matchesNumber(t, n))) {
       askMatched = true;
+      hideChoices();
       completeNumber();
     } else {
+      askFails++;
+      if (askFails >= 2) showChoices();
       askBusy = true;
       speakThen(T[lang].retry, lang, () => { askBusy = false; listen(); });
     }
