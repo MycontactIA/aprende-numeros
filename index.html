@@ -74,17 +74,17 @@ const T = {
   es: { title: "Aprende los números", start: "Empezar", loading: "Abriendo cámara y detector…",
         error: "No pude abrir la cámara o el detector. Revisa los permisos del navegador y tu conexión.",
         level: "Nivel", finished: "¡Terminaste todos los niveles!",
-        ask: "¿Qué número es?", retry: "Inténtalo otra vez", askLabel: "Preguntar qué número es",
+        ask: "¡Ahora dime! ¿Qué número ves?", retry: "¡Casi! Inténtalo otra vez", askLabel: "Decir el número en voz alta", cheer: "¡Muy bien! ",
         levels: "Niveles", exit: "Salir", close: "Cerrar" },
   en: { title: "Learn the numbers", start: "Start", loading: "Opening camera and detector…",
         error: "I could not open the camera or the detector. Check browser permissions and your connection.",
         level: "Level", finished: "You finished all the levels!",
-        ask: "What number is it?", retry: "Try again", askLabel: "Ask what number it is",
+        ask: "Now tell me! What number do you see?", retry: "Almost! Try again", askLabel: "Say the number out loud", cheer: "Great job! ",
         levels: "Levels", exit: "Exit", close: "Close" },
   fr: { title: "Apprends les nombres", start: "Commencer", loading: "Ouverture de la caméra et du détecteur…",
         error: "Impossible d'ouvrir la caméra ou le détecteur. Vérifie les permissions du navigateur et ta connexion.",
         level: "Niveau", finished: "Tu as terminé tous les niveaux !",
-        ask: "Quel nombre est-ce ?", retry: "Essaie encore", askLabel: "Demander quel nombre c'est",
+        ask: "Maintenant dis-moi ! Quel nombre vois-tu ?", retry: "Presque ! Essaie encore", askLabel: "Dire le nombre à voix haute", cheer: "Bravo ! ",
         levels: "Niveaux", exit: "Quitter", close: "Fermer" }
 };
 // Niveles: 0-10, 11-20, 40-100 (de 20 en 20), 150-500 (de 50 en 50), 600-1000 (de 100 en 100)
@@ -92,7 +92,7 @@ function seq(a, b, s) { const r = []; for (let x = a; x <= b; x += s) r.push(x);
 const LEVELS = [seq(0, 10, 1), seq(11, 20, 1), seq(40, 100, 20), seq(150, 500, 50), seq(600, 1000, 100)];
 const ITEMS = [];
 LEVELS.forEach((nums, li) => nums.forEach(n => ITEMS.push({ n, level: li + 1 })));
-const REWARDS_DEBUG_NAMES = ["chime", "arpeggio", "bubble", "clap"];
+const REWARDS_DEBUG_NAMES = ["tuneA", "tuneB", "tuneC", "chime", "bubble", "arpeggio"];
 
 // ---------- Estado ----------
 const DEBUG = new URLSearchParams(location.search).has("debug");
@@ -241,7 +241,7 @@ function completeNumber() {
   const n = ITEMS[idx].n;
   log("complete", { n });
   playReward();
-  setTimeout(() => { if (phase === "celebrate") speak(numberWords(n, lang), lang); }, 500);
+  setTimeout(() => { if (phase === "celebrate") speak(T[lang].cheer + numberWords(n, lang), lang); }, 500);
 }
 function finishTrace() {
   if (askNumber) startAsk();
@@ -353,8 +353,7 @@ function speakThen(text, l, done) {
   const once = () => { if (!called) { called = true; done(); } };
   if (!("speechSynthesis" in window)) { once(); return; }
   speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text);
-  u.lang = LOCALE[l]; u.rate = 0.9;
+  const u = makeUtter(text, l);
   u.onend = once; u.onerror = once;
   speechSynthesis.speak(u);
   setTimeout(once, 4000);
@@ -440,13 +439,29 @@ function nextNumber() {
 }
 
 // ---------- Voz ----------
+// Voces preferidas por idioma: voces más naturales si el sistema las tiene.
+const VOICE_HINTS = {
+  es: ["Mónica", "Paulina", "Monica", "Helena", "Google español"],
+  en: ["Samantha", "Karen", "Google US English", "Google UK English Female"],
+  fr: ["Amélie", "Audrey", "Thomas", "Google français"]
+};
+function makeUtter(text, l) {
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = LOCALE[l];
+  u.rate = 0.85;   // más lenta para niños
+  u.pitch = 1.2;   // un poco más aguda y amigable
+  const all = speechSynthesis.getVoices();
+  const same = all.filter(v => v.lang && v.lang.toLowerCase().startsWith(LOCALE[l].slice(0, 2)));
+  const pick = (VOICE_HINTS[l] || []).map(h => same.find(v => v.name.includes(h))).find(Boolean)
+    || same.find(v => /enhanced|premium/i.test(v.name))
+    || same[0];
+  if (pick) u.voice = pick;
+  return u;
+}
 function speak(text, l) {
   if (!("speechSynthesis" in window)) return;
   speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text);
-  u.lang = LOCALE[l];
-  u.rate = 0.9;
-  speechSynthesis.speak(u);
+  speechSynthesis.speak(makeUtter(text, l));
 }
 
 // ---------- Recompensas sonoras aleatorias (Web Audio, sin archivos) ----------
@@ -484,7 +499,15 @@ function clap() {
   src.connect(f).connect(g).connect(ac.destination);
   src.start();
 }
-const REWARDS = [chime, arpeggio, bubble, clap];
+// Melodías infantiles cortas (escala mayor, tonos alegres).
+function melody(notes, type, vol, step) {
+  let t = 0;
+  notes.forEach(([f, beats]) => { tone(f, t, beats * step * 0.95, type, vol); t += beats * step; });
+}
+function tuneA() { melody([[523.3, 1], [587.3, 1], [659.3, 1], [523.3, 1], [659.3, 1], [698.5, 1], [784, 2]], "triangle", 0.2, 0.22); }
+function tuneB() { melody([[392, 1], [440, 1], [523.3, 1], [440, 1], [659.3, 2], [587.3, 1], [523.3, 2]], "square", 0.07, 0.2); }
+function tuneC() { melody([[523.3, 1], [659.3, 1], [784, 1], [1046.5, 2], [784, 1], [1046.5, 3]], "triangle", 0.2, 0.18); }
+const REWARDS = [tuneA, tuneB, tuneC, chime, bubble, arpeggio];
 function playReward() {
   if (!ac) return;
   let i;
