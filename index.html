@@ -11,6 +11,13 @@
   #stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
   #hud { position: fixed; top: 14px; left: 18px; font-size: 18px; font-weight: 600;
     text-shadow: 0 1px 3px #000; pointer-events: none; }
+  #controls { position: fixed; top: 12px; right: 14px; display: none; gap: 8px; }
+  #controls.on { display: flex; }
+  #controls button, #levelpanel button { font: inherit; font-size: 16px; font-weight: 600; padding: 8px 14px;
+    border-radius: 12px; border: 2px solid #fff; background: rgba(0, 0, 0, 0.55); color: #fff; cursor: pointer; }
+  #levelpanel { position: fixed; top: 60px; right: 14px; display: none; flex-direction: column; gap: 8px;
+    padding: 12px; border-radius: 16px; background: rgba(0, 0, 0, 0.8); }
+  #levelpanel.on { display: flex; }
   #choices { position: fixed; left: 0; right: 0; bottom: 9%; display: none; justify-content: center;
     flex-wrap: wrap; gap: 14px; padding: 0 16px; }
   #choices.on { display: flex; }
@@ -37,6 +44,8 @@
 <canvas id="stage"></canvas>
 <div id="hud"></div>
 <div id="choices"></div>
+<div id="controls"><button id="btnLevels"></button><button id="btnExit"></button></div>
+<div id="levelpanel"></div>
 <div id="menu">
   <h1 id="title">Aprende los números</h1>
   <div id="langs">
@@ -65,15 +74,18 @@ const T = {
   es: { title: "Aprende los números", start: "Empezar", loading: "Abriendo cámara y detector…",
         error: "No pude abrir la cámara o el detector. Revisa los permisos del navegador y tu conexión.",
         level: "Nivel", finished: "¡Terminaste todos los niveles!",
-        ask: "¿Qué número es?", retry: "Inténtalo otra vez", askLabel: "Preguntar qué número es" },
+        ask: "¿Qué número es?", retry: "Inténtalo otra vez", askLabel: "Preguntar qué número es",
+        levels: "Niveles", exit: "Salir", close: "Cerrar" },
   en: { title: "Learn the numbers", start: "Start", loading: "Opening camera and detector…",
         error: "I could not open the camera or the detector. Check browser permissions and your connection.",
         level: "Level", finished: "You finished all the levels!",
-        ask: "What number is it?", retry: "Try again", askLabel: "Ask what number it is" },
+        ask: "What number is it?", retry: "Try again", askLabel: "Ask what number it is",
+        levels: "Levels", exit: "Exit", close: "Close" },
   fr: { title: "Apprends les nombres", start: "Commencer", loading: "Ouverture de la caméra et du détecteur…",
         error: "Impossible d'ouvrir la caméra ou le détecteur. Vérifie les permissions du navigateur et ta connexion.",
         level: "Niveau", finished: "Tu as terminé tous les niveaux !",
-        ask: "Quel nombre est-ce ?", retry: "Essaie encore", askLabel: "Demander quel nombre c'est" }
+        ask: "Quel nombre est-ce ?", retry: "Essaie encore", askLabel: "Demander quel nombre c'est",
+        levels: "Niveaux", exit: "Quitter", close: "Fermer" }
 };
 // Niveles: 0-10, 11-20, 40-100 (de 20 en 20), 150-500 (de 50 en 50), 600-1000 (de 100 en 100)
 function seq(a, b, s) { const r = []; for (let x = a; x <= b; x += s) r.push(x); return r; }
@@ -105,6 +117,10 @@ let lastVideoTime = -1, lastResult = null, currentTip = null, fakeTip = null;
 let lastReward = -1;
 let askNumber = false, askMatched = false, askBusy = false, recog = null, askFails = 0;
 const choicesEl = document.getElementById("choices");
+const controlsEl = document.getElementById("controls");
+const levelPanel = document.getElementById("levelpanel");
+const btnLevels = document.getElementById("btnLevels");
+const btnExit = document.getElementById("btnExit");
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const askBox = document.getElementById("askNum");
 const askTxt = document.getElementById("asktxt");
@@ -225,11 +241,66 @@ function completeNumber() {
   const n = ITEMS[idx].n;
   log("complete", { n });
   playReward();
-  setTimeout(() => speak(numberWords(n, lang), lang), 500);
+  setTimeout(() => { if (phase === "celebrate") speak(numberWords(n, lang), lang); }, 500);
 }
 function finishTrace() {
   if (askNumber) startAsk();
   else completeNumber();
+}
+function stopRecog() {
+  const r = recog;
+  recog = null;
+  if (r) {
+    r.onend = null; r.onresult = null; r.onerror = null;
+    try { r.abort(); } catch (e) { /* ya detenido */ }
+  }
+}
+function stopSpeech() {
+  if ("speechSynthesis" in window) speechSynthesis.cancel();
+}
+function openLevels() {
+  levelPanel.textContent = "";
+  LEVELS.forEach((nums, li) => {
+    const b = document.createElement("button");
+    b.textContent = `${T[lang].level} ${li + 1}: ${nums[0]}–${nums[nums.length - 1]}`;
+    b.addEventListener("click", () => goToLevel(li));
+    levelPanel.appendChild(b);
+  });
+  const c = document.createElement("button");
+  c.textContent = T[lang].close;
+  c.addEventListener("click", closeLevels);
+  levelPanel.appendChild(c);
+  levelPanel.classList.add("on");
+}
+function closeLevels() {
+  levelPanel.classList.remove("on");
+  levelPanel.textContent = "";
+}
+function goToLevel(li) {
+  closeLevels();
+  stopRecog(); stopSpeech(); hideChoices();
+  idx = ITEMS.findIndex(it => it.level === li + 1);
+  phase = "trace";
+  askFails = 0;
+  log("level", { level: li + 1 });
+  buildTargets();
+  updateHud();
+}
+function exitGame() {
+  closeLevels();
+  stopRecog(); stopSpeech(); hideChoices();
+  phase = "idle";
+  started = false;
+  idx = 0;
+  targets = []; visited = []; visitedCount = 0;
+  video.srcObject?.getTracks().forEach(t => t.stop());
+  video.srcObject = null;
+  controlsEl.classList.remove("on");
+  menuEl.style.display = "flex";
+  startBtn.disabled = false;
+  msgEl.textContent = "";
+  updateHud();
+  log("exit");
 }
 function hideChoices() {
   choicesEl.classList.remove("on");
@@ -499,6 +570,8 @@ function updateMenu() {
   document.getElementById("title").textContent = T[lang].title;
   startBtn.textContent = T[lang].start;
   askTxt.textContent = T[lang].askLabel;
+  btnLevels.textContent = T[lang].levels;
+  btnExit.textContent = T[lang].exit;
 }
 async function makeLandmarker(mod, vision) {
   for (const delegate of ["GPU", "CPU"]) {
@@ -518,15 +591,19 @@ async function start() {
   startBtn.disabled = true;
   msgEl.textContent = T[lang].loading;
   // El AudioContext se crea dentro del clic para que el navegador lo permita.
-  ac = new (window.AudioContext || window.webkitAudioContext)();
+  if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
   ac.resume().catch(() => {});
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: 640, height: 480 }, audio: false });
-    video.srcObject = stream;
-    await video.play();
-    const mod = await import(CDN_VISION);
-    const vision = await mod.FilesetResolver.forVisionTasks(CDN_WASM);
-    landmarker = await makeLandmarker(mod, vision);
+    if (!video.srcObject) {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: 640, height: 480 }, audio: false });
+      video.srcObject = stream;
+      await video.play();
+    }
+    if (!landmarker) {
+      const mod = await import(CDN_VISION);
+      const vision = await mod.FilesetResolver.forVisionTasks(CDN_WASM);
+      landmarker = await makeLandmarker(mod, vision);
+    }
   } catch (e) {
     console.error(e);
     msgEl.textContent = T[lang].error;
@@ -535,6 +612,7 @@ async function start() {
     return;
   }
   menuEl.style.display = "none";
+  controlsEl.classList.add("on");
   msgEl.textContent = "";
   idx = 0; phase = "trace";
   askNumber = askBox.checked && !!SR;
@@ -551,6 +629,8 @@ document.querySelectorAll("#langs button").forEach(b => {
   });
 });
 startBtn.addEventListener("click", start);
+btnLevels.addEventListener("click", () => (levelPanel.classList.contains("on") ? closeLevels() : openLevels()));
+btnExit.addEventListener("click", exitGame);
 window.addEventListener("pagehide", () => {
   video.srcObject?.getTracks().forEach(t => t.stop());
   landmarker?.close?.();
