@@ -31,7 +31,8 @@
   #langs button { font: inherit; font-size: 18px; padding: 10px 18px; border-radius: 12px;
     border: 2px solid #555; background: #222; color: #fff; cursor: pointer; }
   #langs button.sel { border-color: #7CFC9A; background: #1d3b2a; }
-  #asklabel { display: flex; gap: 8px; align-items: center; font-size: 17px; cursor: pointer; }
+  #voice { font: inherit; font-size: 16px; padding: 6px 8px; border-radius: 8px; max-width: 60vw; }
+  #asklabel, #voicelabel { display: flex; gap: 8px; align-items: center; font-size: 17px; cursor: pointer; }
   #asklabel input { width: 20px; height: 20px; margin: 0; }
   #start { font: inherit; font-size: 24px; font-weight: 700; padding: 14px 40px; border: 0;
     border-radius: 16px; background: #7CFC9A; color: #111; cursor: pointer; }
@@ -53,6 +54,7 @@
     <button data-lang="en">English</button>
     <button data-lang="fr">Français</button>
   </div>
+  <label id="voicelabel"><span id="voicetxt"></span> <select id="voice"></select></label>
   <label id="asklabel"><input type="checkbox" id="askNum"> <span id="asktxt"></span></label>
   <button id="start">Empezar</button>
   <p id="msg"></p>
@@ -75,17 +77,17 @@ const T = {
         error: "No pude abrir la cámara o el detector. Revisa los permisos del navegador y tu conexión.",
         level: "Nivel", finished: "¡Terminaste todos los niveles!",
         ask: "¡Ahora dime! ¿Qué número ves?", retry: "¡Casi! Inténtalo otra vez", askLabel: "Decir el número en voz alta", cheer: "¡Muy bien! ",
-        levels: "Niveles", exit: "Salir", close: "Cerrar" },
+        levels: "Niveles", exit: "Salir", close: "Cerrar", voice: "Voz" },
   en: { title: "Learn the numbers", start: "Start", loading: "Opening camera and detector…",
         error: "I could not open the camera or the detector. Check browser permissions and your connection.",
         level: "Level", finished: "You finished all the levels!",
         ask: "Now tell me! What number do you see?", retry: "Almost! Try again", askLabel: "Say the number out loud", cheer: "Great job! ",
-        levels: "Levels", exit: "Exit", close: "Close" },
+        levels: "Levels", exit: "Exit", close: "Close", voice: "Voice" },
   fr: { title: "Apprends les nombres", start: "Commencer", loading: "Ouverture de la caméra et du détecteur…",
         error: "Impossible d'ouvrir la caméra ou le détecteur. Vérifie les permissions du navigateur et ta connexion.",
         level: "Niveau", finished: "Tu as terminé tous les niveaux !",
         ask: "Maintenant dis-moi ! Quel nombre vois-tu ?", retry: "Presque ! Essaie encore", askLabel: "Dire le nombre à voix haute", cheer: "Bravo ! ",
-        levels: "Niveaux", exit: "Quitter", close: "Fermer" }
+        levels: "Niveaux", exit: "Quitter", close: "Fermer", voice: "Voix" }
 };
 // Niveles: 0-10, 11-20, 40-100 (de 20 en 20), 150-500 (de 50 en 50), 600-1000 (de 100 en 100)
 function seq(a, b, s) { const r = []; for (let x = a; x <= b; x += s) r.push(x); return r; }
@@ -121,6 +123,8 @@ const controlsEl = document.getElementById("controls");
 const levelPanel = document.getElementById("levelpanel");
 const btnLevels = document.getElementById("btnLevels");
 const btnExit = document.getElementById("btnExit");
+const voiceSel = document.getElementById("voice");
+const voiceTxt = document.getElementById("voicetxt");
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const askBox = document.getElementById("askNum");
 const askTxt = document.getElementById("asktxt");
@@ -241,7 +245,7 @@ function completeNumber() {
   const n = ITEMS[idx].n;
   log("complete", { n });
   playReward();
-  setTimeout(() => { if (phase === "celebrate") speak(T[lang].cheer + numberWords(n, lang), lang); }, 500);
+  setTimeout(() => { if (phase === "celebrate") speak(T[lang].cheer + numberWords(n, lang), lang); }, 300);
 }
 function finishTrace() {
   if (askNumber) startAsk();
@@ -353,9 +357,9 @@ function speakThen(text, l, done) {
   const once = () => { if (!called) { called = true; done(); } };
   if (!("speechSynthesis" in window)) { once(); return; }
   speechSynthesis.cancel();
-  const u = makeUtter(text, l);
-  u.onend = once; u.onerror = once;
-  speechSynthesis.speak(u);
+  currentUtter = makeUtter(text, l);
+  currentUtter.onend = once; currentUtter.onerror = once;
+  speechSynthesis.speak(currentUtter);
   setTimeout(once, 4000);
 }
 function norm(s) {
@@ -445,14 +449,37 @@ const VOICE_HINTS = {
   en: ["Samantha", "Karen", "Google US English", "Google UK English Female"],
   fr: ["Amélie", "Audrey", "Thomas", "Google français"]
 };
+let currentUtter = null; // se guarda la referencia para que el navegador no la descarte
+function voicesFor(l) {
+  if (!("speechSynthesis" in window)) return [];
+  return speechSynthesis.getVoices().filter(v => v.lang && v.lang.toLowerCase().startsWith(LOCALE[l].slice(0, 2)));
+}
+function savedVoice(l) {
+  try { return localStorage.getItem("voice-" + l) || ""; } catch (e) { return ""; }
+}
+function fillVoices() {
+  voiceTxt.textContent = T[lang].voice;
+  voiceSel.textContent = "";
+  const auto = document.createElement("option");
+  auto.value = ""; auto.textContent = "Automática";
+  voiceSel.appendChild(auto);
+  const saved = savedVoice(lang);
+  voicesFor(lang).forEach(v => {
+    const o = document.createElement("option");
+    o.value = v.name; o.textContent = v.name;
+    if (v.name === saved) o.selected = true;
+    voiceSel.appendChild(o);
+  });
+}
 function makeUtter(text, l) {
   const u = new SpeechSynthesisUtterance(text);
   u.lang = LOCALE[l];
   u.rate = 0.85;   // más lenta para niños
   u.pitch = 1.2;   // un poco más aguda y amigable
-  const all = speechSynthesis.getVoices();
-  const same = all.filter(v => v.lang && v.lang.toLowerCase().startsWith(LOCALE[l].slice(0, 2)));
-  const pick = (VOICE_HINTS[l] || []).map(h => same.find(v => v.name.includes(h))).find(Boolean)
+  const same = voicesFor(l);
+  const chosen = same.find(v => v.name === savedVoice(l));
+  const pick = chosen
+    || (VOICE_HINTS[l] || []).map(h => same.find(v => v.name.includes(h))).find(Boolean)
     || same.find(v => /enhanced|premium/i.test(v.name))
     || same[0];
   if (pick) u.voice = pick;
@@ -461,7 +488,8 @@ function makeUtter(text, l) {
 function speak(text, l) {
   if (!("speechSynthesis" in window)) return;
   speechSynthesis.cancel();
-  speechSynthesis.speak(makeUtter(text, l));
+  currentUtter = makeUtter(text, l);
+  speechSynthesis.speak(currentUtter);
 }
 
 // ---------- Recompensas sonoras aleatorias (Web Audio, sin archivos) ----------
@@ -595,7 +623,13 @@ function updateMenu() {
   askTxt.textContent = T[lang].askLabel;
   btnLevels.textContent = T[lang].levels;
   btnExit.textContent = T[lang].exit;
+  fillVoices();
 }
+voiceSel.addEventListener("change", () => {
+  try { localStorage.setItem("voice-" + lang, voiceSel.value); } catch (e) { /* sin almacenamiento */ }
+  speak(T[lang].cheer, lang);
+});
+if ("speechSynthesis" in window) speechSynthesis.onvoiceschanged = fillVoices;
 async function makeLandmarker(mod, vision) {
   for (const delegate of ["GPU", "CPU"]) {
     try {
